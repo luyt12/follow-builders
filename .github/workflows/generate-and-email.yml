@@ -1,0 +1,71 @@
+name: Generate Feeds and Send Email
+
+on:
+  schedule:
+    # 每天 UTC 6:00 (北京时间 14:00) 运行
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'What to fetch'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - tweets-only
+          - podcasts-only
+          - blogs-only
+
+jobs:
+  generate-and-send:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Install dependencies
+        run: cd scripts && npm install
+      
+      - name: Generate feeds
+        env:
+          X_BEARER_TOKEN: ${{ secrets.X_BEARER_TOKEN }}
+          SUPADATA_API_KEY: ${{ secrets.SUPADATA_API_KEY }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.mode }}" != "all" ]; then
+            cd scripts && node generate-feed.js --${{ inputs.mode }}
+          else
+            cd scripts && node generate-feed.js
+          fi
+      
+      - name: Prepare email digest
+        run: cd scripts && node prepare-digest-email.js
+      
+      - name: Send email
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.163.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.EMAIL_FROM }}
+          password: ${{ secrets.EMAIL_PASSWORD }}
+          subject: "🤖 AI Builders Digest - $(date +'%Y-%m-%d')"
+          to: ${{ secrets.EMAIL_TO }}
+          from: "AI Digest <${{ secrets.EMAIL_FROM }}>"
+          html_body: file://digest.html
+          convert_markdown: false
+          ignore_cert: true
+      
+      - name: Commit and push feeds
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add feed-x.json feed-podcasts.json feed-blogs.json state-feed.json digest.html digest.txt
+          git diff --cached --quiet || git commit -m "chore: update feeds and digest [skip ci]"
+          git push
