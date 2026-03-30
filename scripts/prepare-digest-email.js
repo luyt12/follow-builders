@@ -1,29 +1,12 @@
 const fs = require('fs');
 const path = require('path');
 
-// 读取配置文件
-const configPath = path.join(__dirname, '..', 'config.json');
-let config = {};
-try {
-  config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-} catch (e) {
-  console.log('No config.json found, using defaults');
-}
-
 // 读取 feeds
-const feedXPath = path.join(__dirname, '..', 'feed-x.json');
 const feedPodcastsPath = path.join(__dirname, '..', 'feed-podcasts.json');
 const feedBlogsPath = path.join(__dirname, '..', 'feed-blogs.json');
 
-let feedX = { builders: [] };
-let feedPodcasts = { episodes: [] };
+let feedPodcasts = { podcasts: [] };
 let feedBlogs = { posts: [] };
-
-try {
-  feedX = JSON.parse(fs.readFileSync(feedXPath, 'utf8'));
-} catch (e) {
-  console.log('Warning: feed-x.json not found or invalid');
-}
 
 try {
   feedPodcasts = JSON.parse(fs.readFileSync(feedPodcastsPath, 'utf8'));
@@ -59,6 +42,7 @@ function generateHTML() {
     .meta { color: #666; font-size: 14px; margin-bottom: 10px; }
     .footer { margin-top: 50px; padding-top: 25px; border-top: 2px solid #eee; color: #666; font-size: 14px; text-align: center; }
     .emoji { font-size: 20px; margin-right: 8px; }
+    .empty { color: #999; font-style: italic; }
   </style>
 </head>
 <body>
@@ -68,67 +52,48 @@ function generateHTML() {
 `;
 
   // 播客部分
-  if (feedPodcasts.episodes && feedPodcasts.episodes.length > 0) {
-    html += `
+  html += `
     <div class="section">
       <h2><span class="emoji">🎙️</span>播客精华</h2>
 `;
-    feedPodcasts.episodes.slice(0, 3).forEach(ep => {
+  if (feedPodcasts.podcasts && feedPodcasts.podcasts.length > 0) {
+    feedPodcasts.podcasts.slice(0, 3).forEach(ep => {
+      const transcript = ep.transcript || '';
+      const summary = transcript.length > 200 ? transcript.substring(0, 200) + '...' : transcript;
       html += `
       <div class="item">
         <h3>${ep.title || 'Untitled'}</h3>
-        <p class="meta">${ep.podcastName || ''} ${ep.date ? '| ' + ep.date : ''}</p>
-        <p>${ep.summary || ep.description || '暂无摘要'}</p>
-        ${ep.url ? `<p><a href="${ep.url}" target="_blank">收听原文 →</a></p>` : ''}
+        <p class="meta">${ep.name || ''} | ${ep.publishedAt ? new Date(ep.publishedAt).toLocaleDateString('zh-CN') : ''}</p>
+        ${summary ? `<p>${summary}</p>` : ''}
+        <p><a href="${ep.url || '#'}" target="_blank">收听原文 →</a></p>
       </div>
 `;
     });
-    html += `    </div>`;
+  } else {
+    html += `<p class="empty">暂无新内容</p>`;
   }
-
-  // X/Twitter 部分
-  if (feedX.builders && feedX.builders.length > 0) {
-    html += `
-    <div class="section">
-      <h2><span class="emoji">🐦</span>X 建造者观点</h2>
-`;
-    let tweetCount = 0;
-    feedX.builders.forEach(builder => {
-      if (tweetCount >= 5) return;
-      if (builder.tweets && builder.tweets.length > 0) {
-        const tweet = builder.tweets[0];
-        html += `
-      <div class="item">
-        <h3>${builder.name || 'Unknown'}</h3>
-        <p class="meta">${builder.bio || ''}</p>
-        <p>${tweet.text || ''}</p>
-        ${tweet.url ? `<p><a href="${tweet.url}" target="_blank">查看原文 →</a></p>` : ''}
-      </div>
-`;
-        tweetCount++;
-      }
-    });
-    html += `    </div>`;
-  }
+  html += `    </div>`;
 
   // 博客部分
-  if (feedBlogs.posts && feedBlogs.posts.length > 0) {
-    html += `
+  html += `
     <div class="section">
       <h2><span class="emoji">📝</span>官方博客</h2>
 `;
+  if (feedBlogs.posts && feedBlogs.posts.length > 0) {
     feedBlogs.posts.slice(0, 3).forEach(post => {
       html += `
       <div class="item">
         <h3>${post.title || 'Untitled'}</h3>
-        <p class="meta">${post.source || ''} ${post.date ? '| ' + post.date : ''}</p>
-        <p>${post.summary || post.excerpt || '暂无摘要'}</p>
-        ${post.url ? `<p><a href="${post.url}" target="_blank">阅读全文 →</a></p>` : ''}
+        <p class="meta">${post.source || ''} ${post.author ? '| ' + post.author : ''} | ${post.publishedAt ? new Date(post.publishedAt).toLocaleDateString('zh-CN') : ''}</p>
+        ${post.summary ? `<p>${post.summary}</p>` : ''}
+        <p><a href="${post.url || '#'}" target="_blank">阅读全文 →</a></p>
       </div>
 `;
     });
-    html += `    </div>`;
+  } else {
+    html += `<p class="empty">暂无新内容</p>`;
   }
+  html += `    </div>`;
 
   html += `
     <div class="footer">
@@ -147,53 +112,39 @@ function generateHTML() {
 function generateText() {
   const today = new Date().toLocaleDateString('zh-CN');
   let text = `🤖 AI Builders Digest - ${today}\n`;
-  text += '=' .repeat(60) + '\n\n';
+  text += '='.repeat(60) + '\n\n';
 
   // 播客
-  if (feedPodcasts.episodes && feedPodcasts.episodes.length > 0) {
-    text += '🎙️ 播客精华\n';
-    text += '-'.repeat(40) + '\n';
-    feedPodcasts.episodes.slice(0, 3).forEach(ep => {
+  text += '🎙️ 播客精华\n';
+  text += '-'.repeat(40) + '\n';
+  if (feedPodcasts.podcasts && feedPodcasts.podcasts.length > 0) {
+    feedPodcasts.podcasts.slice(0, 3).forEach(ep => {
       text += `\n${ep.title || 'Untitled'}\n`;
-      text += `${ep.podcastName || ''} ${ep.date ? '| ' + ep.date : ''}\n`;
-      text += `${ep.summary || ep.description || '暂无摘要'}\n`;
+      text += `${ep.name || ''} ${ep.publishedAt ? '| ' + new Date(ep.publishedAt).toLocaleDateString('zh-CN') : ''}\n`;
+      const transcript = (ep.transcript || '').substring(0, 200);
+      if (transcript) text += `${transcript}...\n`;
       if (ep.url) text += `链接: ${ep.url}\n`;
     });
-    text += '\n';
+  } else {
+    text += '暂无新内容\n';
   }
-
-  // X
-  if (feedX.builders && feedX.builders.length > 0) {
-    text += '🐦 X 建造者观点\n';
-    text += '-'.repeat(40) + '\n';
-    let tweetCount = 0;
-    feedX.builders.forEach(builder => {
-      if (tweetCount >= 5) return;
-      if (builder.tweets && builder.tweets.length > 0) {
-        const tweet = builder.tweets[0];
-        text += `\n${builder.name || 'Unknown'}\n`;
-        text += `${builder.bio || ''}\n`;
-        text += `${tweet.text || ''}\n`;
-        if (tweet.url) text += `链接: ${tweet.url}\n`;
-        tweetCount++;
-      }
-    });
-    text += '\n';
-  }
+  text += '\n';
 
   // 博客
+  text += '📝 官方博客\n';
+  text += '-'.repeat(40) + '\n';
   if (feedBlogs.posts && feedBlogs.posts.length > 0) {
-    text += '📝 官方博客\n';
-    text += '-'.repeat(40) + '\n';
     feedBlogs.posts.slice(0, 3).forEach(post => {
       text += `\n${post.title || 'Untitled'}\n`;
-      text += `${post.source || ''} ${post.date ? '| ' + post.date : ''}\n`;
-      text += `${post.summary || post.excerpt || '暂无摘要'}\n`;
+      text += `${post.source || ''} ${post.author ? '| ' + post.author : ''} ${post.publishedAt ? '| ' + new Date(post.publishedAt).toLocaleDateString('zh-CN') : ''}\n`;
+      if (post.summary) text += `${post.summary}\n`;
       if (post.url) text += `链接: ${post.url}\n`;
     });
+  } else {
+    text += '暂无新内容\n';
   }
 
-  text += '\n' + '=' .repeat(60) + '\n';
+  text += '\n' + '='.repeat(60) + '\n';
   text += '由 Follow-Builders 自动生成\n';
   text += 'https://github.com/zarazhangrui/follow-builders\n';
 
