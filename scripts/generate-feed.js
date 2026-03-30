@@ -25,33 +25,54 @@ const LOOKBACK_HOURS = 24;
 // State file lives in the repo root so it gets committed by GitHub Actions
 const SCRIPT_DIR = decodeURIComponent(new URL('.', import.meta.url).pathname);
 const STATE_PATH = join(SCRIPT_DIR, '..', 'state-feed.json');
+const PODCAST_FEED_PATH = join(SCRIPT_DIR, '..', 'feed-podcasts.json');
+const BLOG_FEED_PATH = join(SCRIPT_DIR, '..', 'feed-blogs.json');
 
 // -- State Management --------------------------------------------------------
 
-// Tracks which video IDs and post URLs we've already included in feeds
-// so we never send the same content twice across runs.
-
 async function loadState() {
-  if (!existsSync(STATE_PATH)) {
-    return { seenVideos: {}, seenPosts: {} };
-  }
   try {
-    return JSON.parse(await readFile(STATE_PATH, 'utf-8'));
-  } catch {
+    if (!existsSync(STATE_PATH)) {
+      return { seenVideos: {}, seenPosts: {} };
+    }
+    const data = await readFile(STATE_PATH, 'utf-8');
+    const state = JSON.parse(data);
+    // Ensure both properties exist
+    return {
+      seenVideos: state.seenVideos || {},
+      seenPosts: state.seenPosts || {}
+    };
+  } catch (err) {
+    console.error(`Warning: Failed to load state: ${err.message}`);
     return { seenVideos: {}, seenPosts: {} };
   }
 }
 
 async function saveState(state) {
-  // Prune entries older than 7 days to prevent the file from growing forever
-  const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
-  for (const [id, ts] of Object.entries(state.seenVideos)) {
-    if (ts < cutoff) delete state.seenVideos[id];
+  try {
+    // Ensure state object has required properties
+    const safeState = {
+      seenVideos: state?.seenVideos || {},
+      seenPosts: state?.seenPosts || {}
+    };
+    
+    // Prune entries older than 7 days
+    const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const videos = safeState.seenVideos;
+    const posts = safeState.seenPosts;
+    
+    for (const id of Object.keys(videos)) {
+      if (videos[id] < cutoff) delete videos[id];
+    }
+    for (const id of Object.keys(posts)) {
+      if (posts[id] < cutoff) delete posts[id];
+    }
+    
+    await writeFile(STATE_PATH, JSON.stringify(safeState, null, 2));
+  } catch (err) {
+    console.error(`Warning: Failed to save state: ${err.message}`);
+    // Don't throw - state save failure shouldn't stop the process
   }
-  for (const [id, ts] of Object.entries(state.seenPosts)) {
-    if (ts < cutoff) delete state.seenPosts[id];
-  }
-  await writeFile(STATE_PATH, JSON.stringify(state, null, 2));
 }
 
 // -- Load Sources ------------------------------------------------------------
@@ -60,12 +81,17 @@ async function loadSources() {
   const sourcesPath = join(SCRIPT_DIR, '..', 'config', 'default-sources.json');
   try {
     if (!existsSync(sourcesPath)) {
-      console.error('Warning: config/default-sources.json not found, using empty sources');
+      console.error('Error: config/default-sources.json not found');
       return { podcasts: [], blogs: [] };
     }
-    return JSON.parse(await readFile(sourcesPath, 'utf-8'));
+    const data = await readFile(sourcesPath, 'utf-8');
+    const sources = JSON.parse(data);
+    return {
+      podcasts: Array.isArray(sources.podcasts) ? sources.podcasts : [],
+      blogs: Array.isArray(sources.blogs) ? sources.blogs : []
+    };
   } catch (err) {
-    console.error(`Warning: Failed to load sources: ${err.message}`);
+    console.error(`Error: Failed to load sources: ${err.message}`);
     return { podcasts: [], blogs: [] };
   }
 }
@@ -158,7 +184,7 @@ async function fetchYouTubeContent(podcasts, apiKey, state, errors) {
       videoId: selected.videoId,
       url: `https://youtube.com/watch?v=${selected.videoId}`,
       publishedAt: selected.publishedAt,
-      transcript: transcriptData.content || ''
+      transcript: typeof transcriptData.content === 'string' ? transcriptData.content : ''
     }];
   } catch (err) {
     errors.push(`YouTube: Error fetching transcript for ${selected.videoId}: ${err.message}`);
@@ -184,16 +210,18 @@ async function fetchBlogContent(blogs, state, errors) {
       }
 
       const text = await res.text();
-      const posts = parseFeed(text, blog);
+      const posts = parseFeed(text);
 
       // Find new posts within lookback period
       for (const post of posts) {
+        if (!post.url || !post.title) continue;
         if (state.seenPosts[post.url]) continue; // dedup
         const postDate = new Date(post.publishedAt);
+        if (isNaN(postDate.getTime())) continue;
         if (postDate < cutoff) continue;
 
         results.push({
-          source: blog.name,
+          source: blog.name || 'Unknown',
           title: post.title,
           url: post.url,
           publishedAt: post.publishedAt,
@@ -217,7 +245,9 @@ async function fetchBlogContent(blogs, state, errors) {
 }
 
 // Simple RSS/Atom parser
-function parseFeed(text, blog) {
+function parseFeed(text) {
+  if (!text || typeof text !== 'string') return [];
+  
   const posts = [];
   
   // Try RSS 2.0
@@ -266,25 +296,75 @@ function parseFeed(text, blog) {
 }
 
 function extractTag(xml, tag, subtag = null) {
-  const regex = new RegExp(`<${tag}(?:[^>]*)>([\\s\\S]*?)<\\/${tag}>`, 'i');
-  const match = xml.match(regex);
-  if (match && subtag) {
-    return extractTag(match[1], subtag);
+  try {
+    const regex = new RegExp(`<${tag}(?:[^>]*)>([\\s\\S]*?)<\\/${tag}>`, 'i');
+    const match = xml.match(regex);
+    if (match && subtag) {
+      return extractTag(match[1], subtag);
+    }
+    return match ? match[1] : null;
+  } catch {
+    return null;
   }
-  return match ? match[1] : null;
 }
 
 function extractLink(entry) {
-  const match = entry.match(/<link[^>]*href=["']([^"']+)["'][^>]*>/i);
-  return match ? match[1] : null;
+  try {
+    const match = entry.match(/<link[^>]*href=["']([^"']+)["'][^>]*>/i);
+    return match ? match[1] : null;
+  } catch {
+    return null;
+  }
 }
 
 function cleanHtml(str) {
+  if (!str || typeof str !== 'string') return '';
   return str.replace(/<[^>]*>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/&quot;/g, '"').trim();
 }
 
 function stripHtml(html) {
+  if (!html || typeof html !== 'string') return '';
   return html.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+}
+
+// -- Feed Writers -----------------------------------------------------------
+
+async function writePodcastFeed(podcasts, errors) {
+  const feed = {
+    generatedAt: new Date().toISOString(),
+    lookbackHours: LOOKBACK_HOURS,
+    podcasts: Array.isArray(podcasts) ? podcasts : [],
+    stats: { podcastEpisodes: Array.isArray(podcasts) ? podcasts.length : 0 },
+    errors: errors.filter(e => e.startsWith('YouTube')).length > 0
+      ? errors.filter(e => e.startsWith('YouTube')) : undefined
+  };
+  
+  try {
+    await writeFile(PODCAST_FEED_PATH, JSON.stringify(feed, null, 2));
+    console.error(`  feed-podcasts.json: ${feed.stats.podcastEpisodes} episodes`);
+  } catch (err) {
+    console.error(`Error writing feed-podcasts.json: ${err.message}`);
+    throw err;
+  }
+}
+
+async function writeBlogFeed(blogs, errors) {
+  const feed = {
+    generatedAt: new Date().toISOString(),
+    lookbackHours: LOOKBACK_HOURS,
+    posts: Array.isArray(blogs) ? blogs : [],
+    stats: { blogPosts: Array.isArray(blogs) ? blogs.length : 0 },
+    errors: errors.filter(e => e.startsWith('Blog')).length > 0
+      ? errors.filter(e => e.startsWith('Blog')) : undefined
+  };
+  
+  try {
+    await writeFile(BLOG_FEED_PATH, JSON.stringify(feed, null, 2));
+    console.error(`  feed-blogs.json: ${feed.stats.blogPosts} posts`);
+  } catch (err) {
+    console.error(`Error writing feed-blogs.json: ${err.message}`);
+    throw err;
+  }
 }
 
 // -- Main --------------------------------------------------------------------
@@ -297,7 +377,7 @@ async function main() {
   const supadataKey = process.env.SUPADATA_API_KEY;
 
   if (!supadataKey) {
-    console.error('SUPADATA_API_KEY not set');
+    console.error('Error: SUPADATA_API_KEY not set');
     process.exit(1);
   }
 
@@ -305,56 +385,37 @@ async function main() {
   const state = await loadState();
   const errors = [];
 
-  // Ensure sources object exists
-  const podcastSources = sources?.podcasts || [];
-  const blogSources = sources?.blogs || [];
-
   // Fetch podcasts (YouTube)
   let podcasts = [];
-  if (!blogsOnly && podcastSources.length > 0) {
+  if (!blogsOnly && sources.podcasts.length > 0) {
     console.error('Fetching YouTube content...');
-    podcasts = await fetchYouTubeContent(podcastSources, supadataKey, state, errors);
+    podcasts = await fetchYouTubeContent(sources.podcasts, supadataKey, state, errors);
     console.error(`  Found ${podcasts.length} new episodes`);
   }
 
-  // Always write podcast feed (even if empty)
-  const podcastFeed = {
-    generatedAt: new Date().toISOString(),
-    lookbackHours: LOOKBACK_HOURS,
-    podcasts,
-    stats: { podcastEpisodes: podcasts.length },
-    errors: errors.filter(e => e.startsWith('YouTube')).length > 0
-      ? errors.filter(e => e.startsWith('YouTube')) : undefined
-  };
-  await writeFile(join(SCRIPT_DIR, '..', 'feed-podcasts.json'), JSON.stringify(podcastFeed, null, 2));
-  console.error(`  feed-podcasts.json: ${podcasts.length} episodes`);
+  // Write podcast feed
+  await writePodcastFeed(podcasts, errors);
 
   // Fetch blogs
   let blogs = [];
-  if (!podcastsOnly && blogSources.length > 0) {
+  if (!podcastsOnly && sources.blogs.length > 0) {
     console.error('Fetching blog content...');
-    blogs = await fetchBlogContent(blogSources, state, errors);
+    blogs = await fetchBlogContent(sources.blogs, state, errors);
     console.error(`  Found ${blogs.length} new posts`);
   }
 
-  // Always write blog feed (even if empty)
-  const blogFeed = {
-    generatedAt: new Date().toISOString(),
-    lookbackHours: LOOKBACK_HOURS,
-    posts: blogs,
-    stats: { blogPosts: blogs.length },
-    errors: errors.filter(e => e.startsWith('Blog')).length > 0
-      ? errors.filter(e => e.startsWith('Blog')) : undefined
-  };
-  await writeFile(join(SCRIPT_DIR, '..', 'feed-blogs.json'), JSON.stringify(blogFeed, null, 2));
-  console.error(`  feed-blogs.json: ${blogs.length} posts`);
+  // Write blog feed
+  await writeBlogFeed(blogs, errors);
 
   // Save dedup state
   await saveState(state);
 
   if (errors.length > 0) {
-    console.error(`  ${errors.length} non-fatal errors`);
+    console.error(`  ${errors.length} non-fatal errors:`);
+    errors.forEach(e => console.error(`    - ${e}`));
   }
+  
+  console.error('✅ Feed generation completed');
 }
 
 main().catch(err => {
