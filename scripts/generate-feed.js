@@ -58,7 +58,16 @@ async function saveState(state) {
 
 async function loadSources() {
   const sourcesPath = join(SCRIPT_DIR, '..', 'config', 'default-sources.json');
-  return JSON.parse(await readFile(sourcesPath, 'utf-8'));
+  try {
+    if (!existsSync(sourcesPath)) {
+      console.error('Warning: config/default-sources.json not found, using empty sources');
+      return { podcasts: [], blogs: [] };
+    }
+    return JSON.parse(await readFile(sourcesPath, 'utf-8'));
+  } catch (err) {
+    console.error(`Warning: Failed to load sources: ${err.message}`);
+    return { podcasts: [], blogs: [] };
+  }
 }
 
 // -- YouTube Fetching (Supadata API) -----------------------------------------
@@ -296,47 +305,49 @@ async function main() {
   const state = await loadState();
   const errors = [];
 
+  // Ensure sources object exists
+  const podcastSources = sources?.podcasts || [];
+  const blogSources = sources?.blogs || [];
+
   // Fetch podcasts (YouTube)
   let podcasts = [];
-  if (!blogsOnly) {
+  if (!blogsOnly && podcastSources.length > 0) {
     console.error('Fetching YouTube content...');
-    podcasts = await fetchYouTubeContent(sources.podcasts || [], supadataKey, state, errors);
+    podcasts = await fetchYouTubeContent(podcastSources, supadataKey, state, errors);
     console.error(`  Found ${podcasts.length} new episodes`);
-
-    if (podcasts.length > 0) {
-      const podcastFeed = {
-        generatedAt: new Date().toISOString(),
-        lookbackHours: LOOKBACK_HOURS,
-        podcasts,
-        stats: { podcastEpisodes: podcasts.length },
-        errors: errors.filter(e => e.startsWith('YouTube')).length > 0
-          ? errors.filter(e => e.startsWith('YouTube')) : undefined
-      };
-      await writeFile(join(SCRIPT_DIR, '..', 'feed-podcasts.json'), JSON.stringify(podcastFeed, null, 2));
-      console.error(`  feed-podcasts.json: ${podcasts.length} episodes`);
-    }
   }
+
+  // Always write podcast feed (even if empty)
+  const podcastFeed = {
+    generatedAt: new Date().toISOString(),
+    lookbackHours: LOOKBACK_HOURS,
+    podcasts,
+    stats: { podcastEpisodes: podcasts.length },
+    errors: errors.filter(e => e.startsWith('YouTube')).length > 0
+      ? errors.filter(e => e.startsWith('YouTube')) : undefined
+  };
+  await writeFile(join(SCRIPT_DIR, '..', 'feed-podcasts.json'), JSON.stringify(podcastFeed, null, 2));
+  console.error(`  feed-podcasts.json: ${podcasts.length} episodes`);
 
   // Fetch blogs
   let blogs = [];
-  if (!podcastsOnly) {
+  if (!podcastsOnly && blogSources.length > 0) {
     console.error('Fetching blog content...');
-    blogs = await fetchBlogContent(sources.blogs || [], state, errors);
+    blogs = await fetchBlogContent(blogSources, state, errors);
     console.error(`  Found ${blogs.length} new posts`);
-
-    if (blogs.length > 0) {
-      const blogFeed = {
-        generatedAt: new Date().toISOString(),
-        lookbackHours: LOOKBACK_HOURS,
-        posts: blogs,
-        stats: { blogPosts: blogs.length },
-        errors: errors.filter(e => e.startsWith('Blog')).length > 0
-          ? errors.filter(e => e.startsWith('Blog')) : undefined
-      };
-      await writeFile(join(SCRIPT_DIR, '..', 'feed-blogs.json'), JSON.stringify(blogFeed, null, 2));
-      console.error(`  feed-blogs.json: ${blogs.length} posts`);
-    }
   }
+
+  // Always write blog feed (even if empty)
+  const blogFeed = {
+    generatedAt: new Date().toISOString(),
+    lookbackHours: LOOKBACK_HOURS,
+    posts: blogs,
+    stats: { blogPosts: blogs.length },
+    errors: errors.filter(e => e.startsWith('Blog')).length > 0
+      ? errors.filter(e => e.startsWith('Blog')) : undefined
+  };
+  await writeFile(join(SCRIPT_DIR, '..', 'feed-blogs.json'), JSON.stringify(blogFeed, null, 2));
+  console.error(`  feed-blogs.json: ${blogs.length} posts`);
 
   // Save dedup state
   await saveState(state);
